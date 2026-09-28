@@ -1,0 +1,316 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function hasProfile() {
+      return isAuthenticated() && exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+
+    function profile() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function currentCompanyId() {
+      return ('companyId' in profile()) ? profile().companyId : request.auth.uid;
+    }
+
+    function currentRole() {
+      return ('role' in profile()) ? profile().role : 'owner';
+    }
+
+    function isAdmin() {
+      return isAuthenticated() && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    function hasCompany(data) {
+      return 'companyId' in data && data.companyId != null;
+    }
+
+    function companyHasValidAccess(companyId) {
+      return exists(/databases/$(database)/documents/companyAccess/$(companyId))
+        && (
+          get(/databases/$(database)/documents/companyAccess/$(companyId)).data.status == 'legacy'
+          || (
+            get(/databases/$(database)/documents/companyAccess/$(companyId)).data.status == 'trial'
+            && ('trialEndsAt' in get(/databases/$(database)/documents/companyAccess/$(companyId)).data)
+            && get(/databases/$(database)/documents/companyAccess/$(companyId)).data.trialEndsAt >= request.time
+          )
+          || (
+            get(/databases/$(database)/documents/companyAccess/$(companyId)).data.status == 'active'
+            && ('accessUntil' in get(/databases/$(database)/documents/companyAccess/$(companyId)).data)
+            && get(/databases/$(database)/documents/companyAccess/$(companyId)).data.accessUntil >= request.time
+          )
+        );
+    }
+
+    function sameCompany(data) {
+      return hasProfile()
+        && hasCompany(data)
+        && data.companyId == currentCompanyId()
+        && companyHasValidAccess(currentCompanyId());
+    }
+
+    // Transitional compatibility for the company already using the production app.
+    // It keeps the old userId-only app working while the first SaaS login creates companyId/companyAccess.
+    function legacyProfileWithoutCompany() {
+      return hasProfile() && !('companyId' in profile());
+    }
+
+    function legacyProfileAwaitingAccess() {
+      return hasProfile()
+        && ('companyId' in profile())
+        && ('plan' in profile())
+        && profile().plan == 'legacy'
+        && !exists(/databases/$(database)/documents/companyAccess/$(currentCompanyId()));
+    }
+
+    function legacyProfileWithAccess() {
+      return hasProfile()
+        && ('companyId' in profile())
+        && companyHasValidAccess(currentCompanyId());
+    }
+
+    function legacyOwner(data) {
+      return isAuthenticated()
+        && hasProfile()
+        && ('userId' in data)
+        && data.userId == request.auth.uid
+        && (
+          legacyProfileWithoutCompany()
+          || legacyProfileAwaitingAccess()
+          || legacyProfileWithAccess()
+        );
+    }
+
+    function validLegacyCreate(data) {
+      return isAuthenticated()
+        && hasProfile()
+        && !hasCompany(data)
+        && ('userId' in data)
+        && data.userId == request.auth.uid
+        && (
+          legacyProfileWithoutCompany()
+          || legacyProfileAwaitingAccess()
+          || (
+            ('plan' in profile())
+            && profile().plan == 'legacy'
+            && legacyProfileWithAccess()
+          )
+        );
+    }
+
+    function canReadCompanyData(data) {
+      return sameCompany(data) || legacyOwner(data);
+    }
+
+    function canWriteCompanyData(data) {
+      return canReadCompanyData(data) && hasProfile() && currentRole() != 'viewer';
+    }
+
+    function validCompanyCreate(data) {
+      return hasProfile()
+        && hasCompany(data)
+        && data.companyId == currentCompanyId()
+        && companyHasValidAccess(currentCompanyId())
+        && currentRole() != 'viewer';
+    }
+
+    function keepsCompanyOnUpdate() {
+      return hasCompany(resource.data)
+        && request.resource.data.companyId == resource.data.companyId;
+    }
+
+    function validLegacyCompanyMigration() {
+      return !hasCompany(resource.data)
+        && legacyOwner(resource.data)
+        && hasProfile()
+        && ('companyId' in profile())
+        && request.resource.data.companyId == currentCompanyId();
+    }
+
+    function keepsLegacyShapeOnUpdate() {
+      return !hasCompany(resource.data)
+        && !hasCompany(request.resource.data)
+        && legacyOwner(resource.data);
+    }
+
+    // Existing financial collections. Supports legacy userId documents and the new companyId model.
+    match /entries/{entryId} {
+      allow read: if canReadCompanyData(resource.data);
+      allow create: if (
+          validCompanyCreate(request.resource.data)
+          && request.resource.data.userId == request.auth.uid
+        ) || validLegacyCreate(request.resource.data);
+      allow update: if canWriteCompanyData(resource.data)
+        && (keepsCompanyOnUpdate() || validLegacyCompanyMigration() || keepsLegacyShapeOnUpdate())
+        && request.resource.data.userId == resource.data.userId;
+      allow delete: if canWriteCompanyData(resource.data);
+    }
+
+    match /suppliers/{supplierId} {
+      allow read: if canReadCompanyData(resource.data);
+      allow create: if (
+          validCompanyCreate(request.resource.data)
+          && request.resource.data.userId == request.auth.uid
+        ) || validLegacyCreate(request.resource.data);
+      allow update: if canWriteCompanyData(resource.data)
+        && (keepsCompanyOnUpdate() || validLegacyCompanyMigration() || keepsLegacyShapeOnUpdate())
+        && request.resource.data.userId == resource.data.userId;
+      allow delete: if canWriteCompanyData(resource.data);
+    }
+
+    match /employees/{employeeId} {
+      allow read: if canReadCompanyData(resource.data);
+      allow create: if (
+          validCompanyCreate(request.resource.data)
+          && request.resource.data.userId == request.auth.uid
+        ) || validLegacyCreate(request.resource.data);
+      allow update: if canWriteCompanyData(resource.data)
+        && (keepsCompanyOnUpdate() || validLegacyCompanyMigration() || keepsLegacyShapeOnUpdate())
+        && request.resource.data.userId == resource.data.userId;
+      allow delete: if canWriteCompanyData(resource.data);
+    }
+
+    match /incomes/{incomeId} {
+      allow read: if canReadCompanyData(resource.data);
+      allow create: if (
+          validCompanyCreate(request.resource.data)
+          && request.resource.data.userId == request.auth.uid
+        ) || validLegacyCreate(request.resource.data);
+      allow update: if canWriteCompanyData(resource.data)
+        && (keepsCompanyOnUpdate() || validLegacyCompanyMigration() || keepsLegacyShapeOnUpdate())
+        && request.resource.data.userId == resource.data.userId;
+      allow delete: if canWriteCompanyData(resource.data);
+    }
+
+    // Stock master data.
+    match /products/{productId} {
+      allow read: if sameCompany(resource.data);
+      allow create: if validCompanyCreate(request.resource.data)
+        && request.resource.data.createdBy == request.auth.uid;
+      allow update: if canWriteCompanyData(resource.data)
+        && keepsCompanyOnUpdate();
+      allow delete: if false; // deactivate instead of deleting to preserve history
+    }
+
+    // Stock movements are append-only. Never edit/delete historical movements from the client.
+    match /stockMovements/{movementId} {
+      allow read: if sameCompany(resource.data);
+      allow create: if validCompanyCreate(request.resource.data)
+        && request.resource.data.createdBy == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // Imported NF-e metadata. The XML file itself is never stored.
+    match /nfe/{nfeId} {
+      allow read: if sameCompany(resource.data);
+      allow create: if validCompanyCreate(request.resource.data)
+        && request.resource.data.createdBy == request.auth.uid;
+      allow update: if canWriteCompanyData(resource.data)
+        && keepsCompanyOnUpdate()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'status',
+          'cancelledAt',
+          'cancelledBy',
+          'cancelledByEmail',
+          'cancelReason',
+          'reviewRequired',
+          'reviewedAt',
+          'reviewedBy'
+        ]);
+      allow delete: if false;
+    }
+
+    match /nfeItems/{itemId} {
+      allow read: if sameCompany(resource.data);
+      allow create: if validCompanyCreate(request.resource.data);
+      allow update, delete: if false;
+    }
+
+    // Audit log is append-only.
+    match /auditLogs/{logId} {
+      allow read: if sameCompany(resource.data);
+      allow create: if validCompanyCreate(request.resource.data)
+        && request.resource.data.actorUid == request.auth.uid;
+      allow update, delete: if false;
+    }
+
+    // User profile controls company membership. Users cannot move themselves to another company.
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+
+      allow create: if isAuthenticated()
+        && request.auth.uid == userId
+        && request.resource.data.companyId == request.auth.uid
+        && request.resource.data.role == 'owner'
+        && request.resource.data.status == 'trial'
+        && request.resource.data.plan == 'trial';
+
+      // Normal self update: only harmless profile fields.
+      allow update: if isAuthenticated()
+        && request.auth.uid == userId
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'email', 'updatedAt'
+        ]);
+
+      // One-time migration for the company that already existed before the SaaS model.
+      allow update: if isAuthenticated()
+        && request.auth.uid == userId
+        && !('companyId' in resource.data)
+        && request.resource.data.companyId == request.auth.uid
+        && request.resource.data.role == 'owner'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'email', 'companyId', 'role', 'status', 'plan', 'updatedAt'
+        ]);
+
+      // The future Admin app may assign companyId, role and access metadata.
+      allow create, update, delete: if isAdmin();
+    }
+
+    // Seed your own admin UID manually once. Client apps cannot create admin privileges.
+    match /admins/{adminId} {
+      allow read: if isAuthenticated() && request.auth.uid == adminId;
+      allow write: if false;
+    }
+
+    // Prepared for the separate access-management app (manual PIX / monthly / annual).
+    match /companyAccess/{companyId} {
+      allow read: if hasProfile() && currentCompanyId() == companyId;
+
+      // Bootstrap only: an owner may create the company's first legacy/trial access document.
+      // After creation, only the Admin app can change plan/status/dates.
+      allow create: if hasProfile()
+        && currentCompanyId() == companyId
+        && currentRole() == 'owner'
+        && request.resource.data.companyId == companyId
+        && request.resource.data.createdBy == request.auth.uid
+        && (
+          (
+            (
+              profile().status == 'legacy'
+              || (('plan' in profile()) && profile().plan == 'legacy')
+            )
+            && request.resource.data.status == 'legacy'
+            && request.resource.data.plan == 'legacy'
+          )
+          || (
+            profile().status == 'trial'
+            && request.resource.data.status == 'trial'
+            && request.resource.data.plan == 'trial'
+            && request.resource.data.trialEndsAt >= request.time
+            && request.resource.data.trialEndsAt <= request.time + duration.value(8, 'd')
+          )
+        );
+
+      allow create, update, delete: if isAdmin();
+    }
+
+    match /companies/{companyId} {
+      allow read: if hasProfile() && currentCompanyId() == companyId;
+      allow create, update, delete: if isAdmin();
+    }
+  }
+}

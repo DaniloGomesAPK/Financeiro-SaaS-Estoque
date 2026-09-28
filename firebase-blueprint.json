@@ -1,0 +1,73 @@
+{
+  "entities": {
+    "entries": {
+      "title": "Entries",
+      "description": "Lançamentos financeiros de despesas",
+      "properties": {
+        "userId": { "type": "string" },
+        "description": { "type": "string" },
+        "amount": { "type": "number" },
+        "dueDate": { "type": "string" },
+        "docType": { "type": "string" },
+        "status": { "type": "string" },
+        "entityType": { "type": "string" },
+        "supplierId": { "type": "string" },
+        "employeeId": { "type": "string" },
+        "invoiceNumber": { "type": "string" },
+        "dailyInterestRate": { "type": "number" },
+        "dailyPenaltyRate": { "type": "number" },
+        "paymentDate": { "type": "string" },
+        "amountPaid": { "type": "number" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["userId", "description", "amount", "dueDate", "status"]
+    },
+    "suppliers": {
+      "title": "Suppliers",
+      "description": "Fornecedores cadastrados",
+      "properties": {
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "document": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "category": { "type": "string" }
+      },
+      "required": ["userId", "name"]
+    },
+    "employees": {
+      "title": "Employees",
+      "description": "Funcionários cadastrados",
+      "properties": {
+        "userId": { "type": "string" },
+        "name": { "type": "string" },
+        "document": { "type": "string" },
+        "email": { "type": "string" },
+        "phone": { "type": "string" },
+        "role": { "type": "string" }
+      },
+      "required": ["userId", "name"]
+    },
+    "incomes": {
+      "title": "Incomes",
+      "description": "Entradas e receitas cadastradas",
+      "properties": {
+        "userId": { "type": "string" },
+        "companyName": { "type": "string" },
+        "value": { "type": "number" },
+        "date": { "type": "string" },
+        "description": { "type": "string" }
+      },
+      "required": ["userId", "companyName", "value", "date"]
+    },
+    "users": {
+      "title": "Users",
+      "description": "Perfil e metadados de usuários",
+      "properties": {
+        "email": { "type": "string" },
+        "initializedAt": { "type": "string" }
+      }
+    }
+  }
+}
